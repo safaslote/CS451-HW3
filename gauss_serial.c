@@ -14,11 +14,17 @@
 #include <sys/times.h>
 #include <sys/time.h>
 #include <time.h>
+#include <mpi.h>
+#include <stdio.h>
 
 /* Program Parameters */
 #define MAXN 2000  /* Max value of N */
 int N;  /* Matrix size */
 int numThreads; /* Number of threads */
+int npes; //number of processors
+int myrank; //rank
+int start;// start for wtime function
+int end;//end for wtime function
 
 /* Matrices and vectors */
 volatile float A[MAXN][MAXN], B[MAXN], X[MAXN];
@@ -118,6 +124,7 @@ void print_X() {
 }
 
 int main(int argc, char **argv) {
+  int i;
   /* Timing variables */
   struct timeval etstart, etstop;  /* Elapsed times using gettimeofday() */
   struct timezone tzdummy;
@@ -125,22 +132,28 @@ int main(int argc, char **argv) {
   unsigned long long usecstart, usecstop;
   struct tms cputstart, cputstop;  /* CPU times for my processes */
 
+  //initialize MPI
+  MPI_Init(&argc, &argv);
+  //Obtain partition size
+  MPI_Comm_size(MPI_COMM_WORLD, &npes);
+  //Obtain number of processors
+  MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
   /* Process program parameters */
   parameters(argc, argv);
-
-  /* Initialize A and B */
-  initialize_inputs();
-
-  /* Print input matrices */
-  print_inputs();
-
+  //data needs to be held and generated in process 0, so generate inputs in root 0
+  if(npes == 0){
+	initialize_inputs();
+  }
+  //where we do gaussian elimination calculations
+  gauss();
+  
+ 
+  MPI_Finalize(); //end of MPI computation
   /* Start Clock */
   printf("\nStarting clock.\n");
   gettimeofday(&etstart, &tzdummy);
   times(&cputstart);
 
-  /* Gaussian Elimination */
-  gauss();
 
   /* Stop Clock */
   gettimeofday(&etstop, &tzdummy);
@@ -186,23 +199,32 @@ void gauss() {
   int norm, row, col;  /* Normalization row, and zeroing
 			* element row and col */
   float multiplier;
+MPI_Status status; //need status in order to use MPI receive function
+MPI_Request request;
 
-  printf("Computing Serially.\n");
+//if root = 0, start the time since that is where we start the computation
+if(myrank == 0){
+	start = MPI_Wtime();
+	printf("MPI Start Time %d\n", start);
+}
 
   /* Gaussian elimination */
   for (norm = 0; norm < N - 1; norm++) {
+ //we need to send the normalized data for each iteration 
+ //norm row should be applied to all processors for each row of the matrix
+ //do it for both the matrix and the vector
+  MPI_Bcast(&A[norm], N, MPI_INT, 0, MPI_COMM_WORLD);
+   MPI_Bcast(&B[norm], 1, MPI_INT, 0, MPI_COMM_WORLD); 
+   //use MPI scatter to assign each row to a processor
     for (row = norm + 1; row < N; row++) {
-      multiplier = A[row][norm] / A[norm][norm];
+       multiplier = A[row][norm] / A[norm][norm];
       for (col = norm; col < N; col++) {
 	      A[row][col] -= A[norm][col] * multiplier;
       }
       B[row] -= B[norm] * multiplier;
-    }
-  }
-  /* (Diagonal elements are not normalized to 1.  This is treated in back
-   * substitution.)
-   */
-
+     
+ }
+} 
 
   /* Back substitution */
   for (row = N - 1; row >= 0; row--) {
@@ -212,4 +234,9 @@ void gauss() {
     }
     X[row] /= A[row][row];
   }
+//if we are at root processor, end the Wtime since all data gets returned to the root
+if(myrank == 0){
+ end = MPI_Wtime();
+ printf("End time %d\n",end);
+}
 }
